@@ -60,7 +60,22 @@ DSH 自带 node，`doctor.cmd` 会按这个顺序找：
 
 ## 另一个常见弹窗：`Web authentication failed`
 
-这个**不是**配置问题，也不是本工具的范围。原因是宿主每次启动都会按 `host:port` 记一条登录 cookie，端口每次都变，cookie 越攒越多，攒到请求头超过 16 KB 就被服务端 431 打回。
+这个**不是**配置问题，也不是本工具的范围，别拿它当同一个 bug。
+
+已核实到的部分：
+
+- 宿主每次启动，都会为当前 `host:port` 签发一条登录 cookie，名字形如 `dsh-auth-<hash>`
+- 端口每启动一次就变，所以**每次启动都会多一条**
+- 本机实测：9 条这样的 cookie，每条进请求头约 216 字节；30 天过期，没人清理（主窗口 session 没有清理逻辑）
+- 社区那台的 crash log：**没有看到**，所以「攒到 16 KB → 431」是按 16384 / 216 ≈ 75 次的**推算**，未实证
+
+想确认是不是这个原因，去看崩溃日志：
+
+```
+%APPDATA%@deepseek-aidsh-desktoplogscrash-*.log
+```
+
+里面出现 `431` / `Request Header Fields Too Large` 才坐实；只写 `Web authentication failed` 的话，同样要看日志里前几行到底是什么。
 
 清理办法见另一个工具：[dsh-cookie-sweep](https://github.com/15224744/dsh-cookie-sweep)（退出 DSH 后跑一次，只删本机 `dsh-auth-*`，账号 cookie 不动）。
 
