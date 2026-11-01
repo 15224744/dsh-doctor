@@ -11,7 +11,7 @@
 //   node dsh-doctor.mjs nuke --yes      把 profiles\desktop 挪开（数据不删），让应用重建默认
 //   --json 输出机器可读摘要；--kill-zombies 处理占用 18787 的孤儿
 // 退出码：0 = 干净；1 = 有问题（未修或修完仍有）；2 = 用法错误
-import { readFileSync, writeFileSync, readdirSync, existsSync, copyFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, appendFileSync, readdirSync, existsSync, copyFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { join, dirname, extname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -30,6 +30,8 @@ const positional = argv.filter((a) => !a.startsWith('--'))
 const mode = positional[0] ?? (flags.has('--fix') ? 'fix' : 'check')
 const DO_FIX = mode === 'fix' || mode === 'safe' || flags.has('--fix')
 const WANT_KILL = flags.has('--kill-zombies') || flags.has('--kill')
+const WANT_PROCS = flags.has('--procs')
+const STRICT_PROCS = flags.has('--strict-procs')
 const JSON_OUT = flags.has('--json')
 const F_SELF = fileURLToPath(import.meta.url)
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-')
@@ -276,6 +278,71 @@ try {
     }
   }
 } catch { say('INFO 读不到 netstat，跳过端口检查') }
+
+// —— 采样留痕：每次 check 记一行「时间 + 进程数」，堆积从什么时候开始才有据可查 ——
+function procsLogPath() {
+  return join(DSH, 'state', 'rescue-procs.log')
+}
+function appendSample(count) {
+  try {
+    const f = procsLogPath()
+    mkdirSync(dirname(f), { recursive: true })
+    appendFileSync(f, JSON.stringify({ t: new Date().toISOString(), count }) + '\n', 'utf8')
+    const st = statSync(f)
+    if (st.size > 512 * 1024) {           // 约 2 万行，超过就留最近 2000 行
+      const lines = readFileSync(f, 'utf8').split(NL).filter(Boolean).slice(-2000)
+      writeFileSync(f, lines.join(NL) + NL, 'utf8')
+    }
+  } catch (e) { if (process.env.RESCUE_DEBUG) say('DEBUG appendSample: ' + e.message) }
+}
+function pileupStreak(count) {
+  appendSample(count)
+  const now = Date.now(); const LIMIT = 30 * 60 * 1000
+  let oldest = now; let seen = 0
+  try {
+    const lines = readFileSync(procsLogPath(), 'utf8').split(NL).filter(Boolean).slice(-500)
+    for (const l of lines) {
+      let r; try { r = JSON.parse(l) } catch { continue }
+      if (!r || typeof r.count !== 'number' || r.count < 8) continue
+      const t = Date.parse(r.t); if (!Number.isFinite(t)) continue
+      if (t < oldest) oldest = t
+      seen++
+    }
+  } catch { /* 没有历史样本：按首次记录处理 */ }
+  const minutes = seen ? Math.round((now - oldest) / 60000) : 0
+  if (process.env.RESCUE_DEBUG) say(`DEBUG streak seen=${seen} minutes=${minutes}`)
+  return { sustained: minutes >= 30, minutes }
+}
+
+// 3b) 实例堆积：多个 DSH 同时活着会一起啃句柄与桌面堆，最后连 DLL 都初始化不了（0xc0000142）
+say('-- 3b. 实例 / 资源 --')
+try {
+  const tl = execFileSync('tasklist', ['/fi', 'imagename eq DeepSeek Harness.exe', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+  const pids = tl.split(NL).map((l) => l.trim()).filter((l) => l.startsWith('"')).map((l) => l.split('","')[1]).filter(Boolean)
+  if (!pids.length) say('OK  没有在跑的 DSH 进程')
+  else if (pids.length < 8) say(`OK  DSH 进程 ${pids.length} 个（pid ${pids.join(',')}）`)
+  else {
+    // 判据不是「数量多」——频繁重启时数量天然会过 8。真正的信号是「堆着不降超过 30 分钟」。
+    const streak = pileupStreak(pids.length)
+    if (streak.sustained) {
+      say(`WARN DSH 进程 ${pids.length} 个，已持续 ${streak.minutes} 分钟没降（一次正常启动约 5–7 个进程）`)
+      say('  → 托盘退出全部实例，确认任务管理器里清零，再只开一个')
+      say('  → 还会撞 0xc0000142（STATUS_DLL_INIT_FAILED）就重启机器，比反复试快')
+      say('  → 别用管理员权限开 DSH：提权与非提权实例各占一个桌面堆，「以管理员身份运行」常是这类雪崩的起点')
+      if (STRICT_PROCS) problems.push({ kind: 'pileup', count: pids.length, minutes: streak.minutes })
+    } else {
+      say(`INFO DSH 进程 ${pids.length} 个，${streak.minutes > 0 ? `已持续记录 ${streak.minutes} 分钟` : '刚开始记录（不足 1 分钟）'}；满 30 分钟仍不降才判堆积（频繁重启也会短暂过 8）`)
+    }
+  }
+  if (WANT_PROCS && pids.length) {
+    const r = spawnSync('powershell', ['-NoProfile', '-Command',
+      "$p = Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue; if ($p) { $h = ($p | Measure-Object Handles -Sum).Sum; $o = ($p | Sort-Object StartTime | Select-Object -First 1).StartTime; \"$h|$o\" }"], { encoding: 'utf8', timeout: 20000 })
+    const [hs, oldest] = String(r.stdout || '').trim().split('|')
+    const h = Number(hs)
+    if (h > 12000) { say(`WARN 句柄合计 ${h}（阈值 12000），资源在漏`); if (STRICT_PROCS) problems.push({ kind: 'handles', h }) }
+    else if (h) say(`INFO 句柄合计 ${h}${oldest ? '；最早启动 ' + oldest : ''}`)
+  }
+} catch { say('INFO 读不到 tasklist，跳过实例检查') }
 
 // 4) 动作类命令
 if (mode === 'start' || mode === 'restart') {
