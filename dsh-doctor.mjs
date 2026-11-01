@@ -297,21 +297,27 @@ function appendSample(count) {
 }
 function pileupStreak(count) {
   appendSample(count)
-  const now = Date.now(); const LIMIT = 30 * 60 * 1000
-  let oldest = now; let seen = 0
+  const MAX_GAP = 10 * 60 * 1000        // 相邻样本超过 10 分钟算断档，不跨档累加
+  const MIN_SUSTAIN = 30 * 60 * 1000    // 连续 >=8 撑满 30 分钟才算堆积
+  let samples = []
   try {
-    const lines = readFileSync(procsLogPath(), 'utf8').split(NL).filter(Boolean).slice(-500)
-    for (const l of lines) {
-      let r; try { r = JSON.parse(l) } catch { continue }
-      if (!r || typeof r.count !== 'number' || r.count < 8) continue
-      const t = Date.parse(r.t); if (!Number.isFinite(t)) continue
-      if (t < oldest) oldest = t
-      seen++
-    }
+    samples = readFileSync(procsLogPath(), 'utf8').split(NL).filter(Boolean).slice(-500)
+      .map((l) => { try { const r = JSON.parse(l); const t = Date.parse(r.t); return Number.isFinite(t) && typeof r.count === 'number' ? { t, count: r.count } : null } catch { return null } })
+      .filter(Boolean)
   } catch { /* 没有历史样本：按首次记录处理 */ }
-  const minutes = seen ? Math.round((now - oldest) / 60000) : 0
-  if (process.env.RESCUE_DEBUG) say(`DEBUG streak seen=${seen} minutes=${minutes}`)
-  return { sustained: minutes >= 30, minutes }
+  // 从最后一条往回走：只有「连续 >=8 且不断档」的那一段才算数；中途降下去过就重新计时
+  let start = 0, prev = null, run = 0
+  for (let i = samples.length - 1; i >= 0; i--) {
+    const x = samples[i]
+    if (x.count < 8) break
+    if (prev !== null && prev - x.t > MAX_GAP) break
+    start = x.t; prev = x.t; run++
+  }
+  const latest = samples.length ? samples[samples.length - 1].count : 0
+  const minutes = start ? Math.round((Date.now() - start) / 60000) : 0
+  const sustained = latest >= 8 && start > 0 && Date.now() - start >= MIN_SUSTAIN
+  if (process.env.RESCUE_DEBUG) say(`DEBUG streak run=${run} minutes=${minutes} latest=${latest} sustained=${sustained}`)
+  return { sustained, minutes, run, latest }
 }
 
 // 3b) 实例堆积：多个 DSH 同时活着会一起啃句柄与桌面堆，最后连 DLL 都初始化不了（0xc0000142）

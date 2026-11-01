@@ -1,6 +1,6 @@
 {
   "name": "dsh-doctor",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "离线急救：DSH 桌面端起不来时，体检并修好 BOM / 坏 JSON / YAML Tab / ghost bundle 等配置问题",
   "type": "module",
   "bin": {
