@@ -33,6 +33,7 @@ const WANT_KILL = flags.has('--kill-zombies') || flags.has('--kill')
 const WANT_PROCS = flags.has('--procs')
 const STRICT_PROCS = flags.has('--strict-procs')
 const JSON_OUT = flags.has('--json')
+const SAVE_BASELINE = flags.has('--save-baseline')
 const F_SELF = fileURLToPath(import.meta.url)
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-')
 const out = []
@@ -196,18 +197,19 @@ if (!existsSync(PKG)) {
         const now = new Set(bs)
         const gone = exp.filter((x) => !now.has(x))
         const extra = bs.filter((x) => !exp.includes(x))
-        if (gone.length || extra.length) {
-          problems.push({ kind: 'bundles-baseline', gone, extra })
-          say('FAIL bundles 与基线不一致：' + [
-            gone.length ? '基线有但现在没有 ' + gone.join(', ') : '',
-            extra.length ? '现在多了 ' + extra.join(', ') : '',
-          ].filter(Boolean).join('；'))
-          if (DO_FIX && !bad.length) {
-            const b = backupOf(expPath)
-            writeFileSync(expPath, JSON.stringify({ bundles: bs }, null, 2) + NL)
-            fixes.push('expected-bundles')
-            say('  fixed: 基线更新为当前 ' + bs.length + ' 项（备份 ' + basename(b) + '）')
-          } else if (DO_FIX) say('  skip: 先把坏 bundle 处理掉再改基线，不然会把故障写进基线')
+        if (SAVE_BASELINE) {
+          const b = backupOf(expPath)
+          writeFileSync(expPath, JSON.stringify({ bundles: bs }, null, 2) + NL)
+          fixes.push('expected-bundles')
+          say(`  saved: 基线更新为当前 ${bs.length} 项（备份 ${basename(b)}）`)
+        } else if (gone.length || extra.length) {
+          if (gone.length) {
+            problems.push({ kind: 'bundles-baseline', gone, extra })
+            say('FAIL 基线里有、现在没了：' + gone.join(', ') + '（插件被摘掉了？确认后加 --save-baseline 收进基线）')
+          }
+          if (extra.length) {
+            say('WARN 现在比基线多：' + extra.join(', ') + '（新增插件？确认无误后加 --save-baseline 收进基线）')
+          }
         } else say('OK  bundles 与基线一致（' + exp.length + ' 项）')
       } catch (e) {
         problems.push({ kind: 'expected-bundles', err: String(e.message).slice(0, 60) })
