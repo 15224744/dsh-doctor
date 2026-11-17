@@ -302,7 +302,7 @@ function appendSample(count) {
 function topLevelHosts(allPids) {
   if (!allPids.length) return []
   const r = spawnSync('powershell', ['-NoProfile', '-Command',
-    "$a = Get-CimInstance Win32_Process -Filter \"Name='DeepSeek Harness.exe'\" | Select-Object ProcessId,ParentProcessId; $ids = $a.ProcessId; ($a | Where-Object { $ids -notcontains $_.ParentProcessId }).ProcessId -join ','"],
+    "$a = Get-CimInstance Win32_Process -Filter \"Name='DeepSeek Harness.exe'\" | Select-Object ProcessId,ParentProcessId,CommandLine; $ids = $a.ProcessId; ($a | Where-Object { $ids -notcontains $_.ParentProcessId -and $_.CommandLine -notmatch '\\.js' }).ProcessId -join ','"],
     { encoding: 'utf8', timeout: 20000 })
   const out = String(r.stdout || '').trim()
   if (r.status !== 0 || !out) { if (process.env.RESCUE_DEBUG) say('DEBUG topLevelHosts 退化为 1 个宿主'); return [allPids[0]] }
