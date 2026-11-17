@@ -286,11 +286,11 @@ function procsLogPath() {
   if (process.env.RESCUE_PROCS_LOG) return process.env.RESCUE_PROCS_LOG
   return join(DSH, 'state', 'rescue-procs.log')
 }
-function appendSample(count) {
+function appendSample(hosts, total) {
   try {
     const f = procsLogPath()
     mkdirSync(dirname(f), { recursive: true })
-    appendFileSync(f, JSON.stringify({ t: new Date().toISOString(), count }) + '\n', 'utf8')
+    appendFileSync(f, JSON.stringify({ t: new Date().toISOString(), hosts, count: hosts, total }) + '\n', 'utf8')
     const st = statSync(f)
     if (st.size > 512 * 1024) {           // 约 2 万行，超过就留最近 2000 行
       const lines = readFileSync(f, 'utf8').split(NL).filter(Boolean).slice(-2000)
@@ -310,13 +310,12 @@ function topLevelHosts(allPids) {
   return pids.length ? pids : [allPids[0]]
 }
 function pileupStreak(count, MIN = 8) {
-  appendSample(count)
   const MAX_GAP = 10 * 60 * 1000        // 相邻样本超过 10 分钟算断档，不跨档累加
   const MIN_SUSTAIN = 30 * 60 * 1000    // 连续 >=8 撑满 30 分钟才算堆积
   let samples = []
   try {
     samples = readFileSync(procsLogPath(), 'utf8').split(NL).filter(Boolean).slice(-500)
-      .map((l) => { try { const r = JSON.parse(l); const t = Date.parse(r.t); return Number.isFinite(t) && typeof r.count === 'number' ? { t, count: r.count } : null } catch { return null } })
+      .map((l) => { try { const r = JSON.parse(l); const t = Date.parse(r.t); return Number.isFinite(t) && typeof r.count === 'number' ? { t, count: (typeof r.hosts === 'number' ? r.hosts : r.count) } : null } catch { return null } })
       .filter(Boolean)
   } catch { /* 没有历史样本：按首次记录处理 */ }
   // 从最后一条往回走：只有「连续 >=8 且不断档」的那一段才算数；中途降下去过就重新计时
@@ -343,6 +342,7 @@ try {
   const top = topLevelHosts(all)
   const total = Number(process.env.RESCUE_FAKE_TOTAL || all.length)
   const hosts = Number(process.env.RESCUE_FAKE_HOSTS || top.length)
+  appendSample(hosts, total)
   if (!total) say('OK  没有在跑的 DSH 进程')
   else if (hosts <= 1) {
     say(`OK  ${hosts} 个宿主实例（进程合计 ${total} 个，含 sidecar / 子进程）`)

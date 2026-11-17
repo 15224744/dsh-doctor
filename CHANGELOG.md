@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 - 2026-11-18
+
+- 修复留痕从不写入：`appendSample` 里引用了不存在的变量（`count is not defined`），异常被 catch 吞掉，日志一直只有旧样本。
+- 单宿主时也留痕：原来只在「疑似多开」分支里采样，正常状态一条不记，导致「什么时候开始堆的」无据可查。现在每次 `check` 都追加一行。
+- 采样字段增加 `hosts` 与 `total`（保留 `count` 兼容旧日志）：判据读 `hosts`，进程总数只作参考。
+
 ## 1.2.1 - 2026-11-18
 
 - 3b 的宿主计数不再把 sidecar 算成宿主实例：命令行里带 `.js` 的进程（`ELECTRON_RUN_AS_NODE` 跑的 billion-context 之类）一律排除。
